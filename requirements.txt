@@ -1,0 +1,11 @@
+langchain
+faiss-cpu
+sentence-transformers
+requests
+python-dotenv
+unstructured
+playwright
+pymongo
+Flask
+gunicorn
+
