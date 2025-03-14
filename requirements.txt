@@ -8,4 +8,8 @@ playwright
 pymongo
 Flask
 gunicorn
+langchain-community
+python-docx
+langchain
+
 
