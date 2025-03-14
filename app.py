@@ -2,11 +2,12 @@ from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 import os
 import requests
-from langchain.embeddings import HuggingFaceEmbeddings
-from langchain.vectorstores import FAISS
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain.text_splitter import RecursiveCharacterTextSplitter  # This one remains the same!
+from langchain.tools.retriever import create_retriever_tool
+from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import AsyncHtmlLoader, PyPDFLoader, UnstructuredWordDocumentLoader
-from langchain_core.tools.retriever import create_retriever_tool
+
 
 # Load environment variables
 load_dotenv()
