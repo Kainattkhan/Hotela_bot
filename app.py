@@ -1,13 +1,14 @@
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 import os
+import re 
 import requests
+import asyncio
 from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain.text_splitter import RecursiveCharacterTextSplitter  # This one remains the same!
-from langchain.tools.retriever import create_retriever_tool
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_community.document_loaders import AsyncHtmlLoader, PyPDFLoader, UnstructuredWordDocumentLoader
-
+from langchain_community.document_loaders import PyPDFLoader, UnstructuredWordDocumentLoader
+from langchain.tools.retriever import create_retriever_tool
 
 # Load environment variables
 load_dotenv()
@@ -15,25 +16,26 @@ HUGGINGFACE_ACCESS_TOKEN = os.getenv("HUGGINGFACE_ACCESS_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-print("Loaded GROQ_API_KEY:", GROQ_API_KEY)  # Check if this prints the correct key
+if not GROQ_API_KEY or not HUGGINGFACE_ACCESS_TOKEN:
+    raise ValueError("Missing API keys! Ensure GROQ_API_KEY and HUGGINGFACE_ACCESS_TOKEN are set.")
 
+# Flask app
+app = Flask(__name__)
 
-# Load documents asynchronously
-web_loader = AsyncHtmlLoader(["https://hotelaapp.com"])
-docs = web_loader.load()
+# Load documents (synchronously for better Flask integration)
+def load_documents():
+    pdf_loader = PyPDFLoader("./hotela.pdf")
+    pdf_documents = pdf_loader.load()
 
-pdf_loader = PyPDFLoader("./hotela.pdf")
-pdf_documents = pdf_loader.load()
+    word_loader = UnstructuredWordDocumentLoader("./business.docx")
+    word_documents = word_loader.load()
 
-word_loader = UnstructuredWordDocumentLoader("./business.docx")
-word_documents = word_loader.load()
+    return pdf_documents + word_documents
 
-# Combine all sources
-all_documents = docs + pdf_documents + word_documents
-
-# Split documents into chunks
+# Prepare document chunks
+documents = load_documents()
 splitter = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=300)
-documents = splitter.split_documents(all_documents)
+split_documents = splitter.split_documents(documents)
 
 # Initialize embedding model
 embedding_model = HuggingFaceEmbeddings(
@@ -42,7 +44,7 @@ embedding_model = HuggingFaceEmbeddings(
 )
 
 # Create FAISS vector store
-vectordb = FAISS.from_documents(documents, embedding_model)
+vectordb = FAISS.from_documents(split_documents, embedding_model)
 
 # Create retriever
 retriever = vectordb.as_retriever(search_kwargs={"k": 10})
@@ -50,12 +52,9 @@ retriever = vectordb.as_retriever(search_kwargs={"k": 10})
 # Create retriever tool
 retriever_tool = create_retriever_tool(
     retriever,
-    name="Hotelaapp.com_search",
+    name="Hotelaapp_search",
     description="Search for information about Hotelaapp.com"
 )
-
-# Flask app
-app = Flask(__name__)
 
 # Function to send queries to Groq API
 def query_groq(question):
@@ -70,45 +69,44 @@ def query_groq(question):
             {"role": "user", "content": question}
         ],
         "temperature": 0.5,  # Lower temp = more focused responses
-        "max_tokens": 200,   # Limit response length
+        "max_tokens": 200,   
     }
-    response = requests.post(GROQ_API_URL, json=payload, headers=headers)
-    
-    if response.status_code == 200:
+    try:
+        response = requests.post(GROQ_API_URL, json=payload, headers=headers)
+        response.raise_for_status()  # Raise error for bad status codes
         raw_response = response.json()["choices"][0]["message"]["content"]
-        
-        # Post-processing: Remove unnecessary formatting
-        clean_response = raw_response.replace("\n\n", " ").replace("\n", " ").strip()
-        
-        return clean_response
-    else:
-        return f"Error: {response.json()}"
+        return raw_response.strip()
+    except requests.exceptions.RequestException as e:
+        return f"Error: {str(e)}"
 
-@app.route("/", methods=["GET", "POST"])
+@app.route("/", methods=["GET"])
 def home():
-    if request.method == "POST":
-        return jsonify({"error": "Use /chat endpoint for POST requests"}), 405
     return "Welcome to the Hotela Chatbot API! Use the /chat endpoint to interact."
 
-# Flask route for chatbot
+# Chat endpoint
 @app.route("/chat", methods=["POST"])
 def chat():
-    if not request.is_json:  # ✅ Check if request is JSON
-        return jsonify({"error": "Request must be JSON"}), 415  # Return proper error
+    if not request.is_json:
+        return jsonify({"error": "Request must be JSON"}), 415
 
-    data = request.get_json()  # ✅ Use get_json() to avoid errors
-    user_query = data.get("query")
+    data = request.get_json()
+    user_query = data.get("query", "").strip().lower()
 
-    if not user_query:  # ✅ Check if query is provided
+    if not user_query:
         return jsonify({"error": "Missing 'query' field"}), 400
+
+    # Handle greetings more flexibly (removes punctuation and matches common greetings)
+    greetings_pattern = r"^(hello|hi|hey|how are you|good morning|good evening)[\W]*$"
+    if re.match(greetings_pattern, user_query):
+        return jsonify({"response": "Hello! How can I assist you today?"})
 
     # Retrieve relevant context
     relevant_context = retriever_tool.run(user_query)
 
-    if not relevant_context:
-        return jsonify({"response": "Sorry, I couldn't find any relevant information."})
+    if not relevant_context or len(relevant_context) < 10:
+        return jsonify({"response": "I'm here to help! What would you like to know?"})
 
-    # Build prompt and get response
+    # Query Groq API with context
     full_prompt = f"Context: {relevant_context}\n\nUser: {user_query}"
     response = query_groq(full_prompt)
 
