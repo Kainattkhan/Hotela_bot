@@ -1,14 +1,13 @@
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 import os
-import re 
 import requests
-import asyncio
+import re
 from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import FAISS
-from langchain_community.document_loaders import PyPDFLoader, UnstructuredWordDocumentLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter 
 from langchain.tools.retriever import create_retriever_tool
+from langchain_community.vectorstores import FAISS
+from langchain_community.document_loaders import AsyncHtmlLoader, PyPDFLoader, UnstructuredWordDocumentLoader
 
 # Load environment variables
 load_dotenv()
@@ -16,26 +15,7 @@ HUGGINGFACE_ACCESS_TOKEN = os.getenv("HUGGINGFACE_ACCESS_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-if not GROQ_API_KEY or not HUGGINGFACE_ACCESS_TOKEN:
-    raise ValueError("Missing API keys! Ensure GROQ_API_KEY and HUGGINGFACE_ACCESS_TOKEN are set.")
-
-# Flask app
 app = Flask(__name__)
-
-# Load documents (synchronously for better Flask integration)
-def load_documents():
-    pdf_loader = PyPDFLoader("./hotela.pdf")
-    pdf_documents = pdf_loader.load()
-
-    word_loader = UnstructuredWordDocumentLoader("./business.docx")
-    word_documents = word_loader.load()
-
-    return pdf_documents + word_documents
-
-# Prepare document chunks
-documents = load_documents()
-splitter = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=300)
-split_documents = splitter.split_documents(documents)
 
 # Initialize embedding model
 embedding_model = HuggingFaceEmbeddings(
@@ -43,21 +23,46 @@ embedding_model = HuggingFaceEmbeddings(
     model_kwargs={'token': HUGGINGFACE_ACCESS_TOKEN}
 )
 
-# Create FAISS vector store
-vectordb = FAISS.from_documents(split_documents, embedding_model)
+# FAISS index path (saves memory by keeping data on disk)
+FAISS_INDEX_PATH = "./faiss_index"
+
+def load_documents():
+    """ Load and process documents only when needed (Lazy Loading) """
+    try:
+        web_loader = AsyncHtmlLoader(["https://hotelaapp.com"])
+        docs = web_loader.load()
+
+        pdf_loader = PyPDFLoader("./hotela.pdf")
+        pdf_documents = pdf_loader.load()
+
+        word_loader = UnstructuredWordDocumentLoader("./business.docx")
+        word_documents = word_loader.load()
+
+        # Combine all sources
+        all_documents = docs + pdf_documents + word_documents
+
+        # Split documents into chunks
+        splitter = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=300)
+        return splitter.split_documents(all_documents)
+
+    except Exception as e:
+        print(f"Error loading documents: {e}")
+        return []  # Return empty list if error occurs
+
+# Load FAISS if exists, otherwise create it
+if os.path.exists(FAISS_INDEX_PATH):
+    vectordb = FAISS.load_local(FAISS_INDEX_PATH, embedding_model)
+else:
+    documents = load_documents()
+    vectordb = FAISS.from_documents(documents, embedding_model)
+    vectordb.save_local(FAISS_INDEX_PATH)  # Save FAISS index to disk
 
 # Create retriever
 retriever = vectordb.as_retriever(search_kwargs={"k": 10})
+retriever_tool = create_retriever_tool(retriever, name="Hotelaapp.com_search", description="Search for information about Hotelaapp.com")
 
-# Create retriever tool
-retriever_tool = create_retriever_tool(
-    retriever,
-    name="Hotelaapp_search",
-    description="Search for information about Hotelaapp.com"
-)
-
-# Function to send queries to Groq API
 def query_groq(question):
+    """ Send query to Groq API """
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json",
@@ -65,27 +70,25 @@ def query_groq(question):
     payload = {
         "model": "mixtral-8x7b-32768",
         "messages": [
-            {"role": "system", "content": "You are a helpful assistant. Keep your responses short and precise."},
+            {"role": "system", "content": "You are a helpful assistant. Keep responses short and precise."},
             {"role": "user", "content": question}
         ],
-        "temperature": 0.5,  # Lower temp = more focused responses
-        "max_tokens": 200,   
+        "temperature": 0.5,
+        "max_tokens": 200,
     }
-    try:
-        response = requests.post(GROQ_API_URL, json=payload, headers=headers)
-        response.raise_for_status()  # Raise error for bad status codes
-        raw_response = response.json()["choices"][0]["message"]["content"]
-        return raw_response.strip()
-    except requests.exceptions.RequestException as e:
-        return f"Error: {str(e)}"
+    response = requests.post(GROQ_API_URL, json=payload, headers=headers)
+
+    if response.status_code == 200:
+        return response.json()["choices"][0]["message"]["content"].strip()
+    return f"Error: {response.json()}"
 
 @app.route("/", methods=["GET"])
 def home():
     return "Welcome to the Hotela Chatbot API! Use the /chat endpoint to interact."
 
-# Chat endpoint
 @app.route("/chat", methods=["POST"])
 def chat():
+    """ Handle chat requests """
     if not request.is_json:
         return jsonify({"error": "Request must be JSON"}), 415
 
@@ -95,7 +98,7 @@ def chat():
     if not user_query:
         return jsonify({"error": "Missing 'query' field"}), 400
 
-    # Handle greetings more flexibly (removes punctuation and matches common greetings)
+    # Handle greetings flexibly
     greetings_pattern = r"^(hello|hi|hey|how are you|good morning|good evening)[\W]*$"
     if re.match(greetings_pattern, user_query):
         return jsonify({"response": "Hello! How can I assist you today?"})
@@ -106,7 +109,7 @@ def chat():
     if not relevant_context or len(relevant_context) < 10:
         return jsonify({"response": "I'm here to help! What would you like to know?"})
 
-    # Query Groq API with context
+    # Query Groq API
     full_prompt = f"Context: {relevant_context}\n\nUser: {user_query}"
     response = query_groq(full_prompt)
 
