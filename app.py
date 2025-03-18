@@ -3,14 +3,11 @@ from dotenv import load_dotenv
 import os
 import re 
 import requests
-import asyncio
-# from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyPDFLoader, UnstructuredWordDocumentLoader
 from langchain.tools.retriever import create_retriever_tool
 from langchain_huggingface import HuggingFaceEmbeddings
-
 
 # Load environment variables
 load_dotenv()
@@ -60,6 +57,7 @@ retriever_tool = create_retriever_tool(
 
 # Function to send queries to Groq API
 def query_groq(question):
+    """ Send query to Groq API """
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json",
@@ -67,19 +65,23 @@ def query_groq(question):
     payload = {
         "model": "mixtral-8x7b-32768",
         "messages": [
-            {"role": "system", "content": "You are a helpful assistant. Keep your responses short and precise."},
+            {"role": "system", "content": "You are a helpful assistant. Keep responses short and precise."},
             {"role": "user", "content": question}
         ],
         "temperature": 0.5,  # Lower temp = more focused responses
         "max_tokens": 200,   
     }
-    try:
-        response = requests.post(GROQ_API_URL, json=payload, headers=headers)
-        response.raise_for_status()  # Raise error for bad status codes
+    response = requests.post(GROQ_API_URL, json=payload, headers=headers)
+    
+    if response.status_code == 200:
         raw_response = response.json()["choices"][0]["message"]["content"]
-        return raw_response.strip()
-    except requests.exceptions.RequestException as e:
-        return f"Error: {str(e)}"
+        
+        # Post-processing: Remove unnecessary formatting
+        clean_response = raw_response.replace("\n\n", " ").replace("\n", " ").strip()
+        
+        return clean_response
+    else:
+        return f"Error: {response.json()}"
 
 @app.route("/", methods=["GET"])
 def home():
