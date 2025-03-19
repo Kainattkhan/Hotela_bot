@@ -11,5 +11,6 @@ gunicorn
 langchain-community
 python-docx
 langchain
+langchain-huggingface
 
 
