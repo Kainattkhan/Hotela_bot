@@ -39,7 +39,7 @@ split_documents = splitter.split_documents(documents)
 
 # Initialize embedding model
 embedding_model = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/multi-qa-mpnet-base-dot-v1",
+    model_name="sentence-transformers/all-MiniLM-L6-v2",
     model_kwargs={'token': HUGGINGFACE_ACCESS_TOKEN}
 )
 
@@ -84,9 +84,9 @@ def query_groq(question):
     else:
         return f"Error: {response.json()}"
 
-@app.route("/", methods=["GET"])
+@app.route("/")
 def home():
-    return "Welcome to the Hotela Chatbot API! Use the /chat endpoint to interact."
+    return "Hello, Render!"
 
 # Chat endpoint
 @app.route("/chat", methods=["POST"])
@@ -132,4 +132,5 @@ def chat():
     return jsonify({"response": cleaned_response})
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    port = int(os.environ.get("PORT", 5000)) 
+    app.run(host="0.0.0.0", port=port, debug=True)
