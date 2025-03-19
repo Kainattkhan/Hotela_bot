@@ -8,7 +8,6 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyPDFLoader, UnstructuredWordDocumentLoader
 from langchain.tools.retriever import create_retriever_tool
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_huggingface import HuggingFaceEmbeddings
 
 # Load environment variables
 load_dotenv()
@@ -22,115 +21,88 @@ if not GROQ_API_KEY or not HUGGINGFACE_ACCESS_TOKEN:
 # Flask app
 app = Flask(__name__)
 
-# Load documents (synchronously for better Flask integration)
-def load_documents():
-    pdf_loader = PyPDFLoader("./hotela.pdf")
-    pdf_documents = pdf_loader.load()
+# Lazy loading of documents and vector database
+documents = None
+split_documents = None
+vectordb = None
+retriever = None
+retriever_tool = None
 
-    word_loader = UnstructuredWordDocumentLoader("./business.docx")
-    word_documents = word_loader.load()
+def initialize_retriever():
+    global documents, split_documents, vectordb, retriever, retriever_tool
+    if documents is None:
+        print("Loading documents...")
+        pdf_loader = PyPDFLoader("./hotela.pdf")
+        word_loader = UnstructuredWordDocumentLoader("./business.docx")
+        documents = pdf_loader.load() + word_loader.load()
 
-    return pdf_documents + word_documents
+        splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100)
+        split_documents = splitter.split_documents(documents)
 
-# Prepare document chunks
-documents = load_documents()
-splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100)
-split_documents = splitter.split_documents(documents)
+        embedding_model = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2",
+            model_kwargs={'token': HUGGINGFACE_ACCESS_TOKEN}
+        )
 
-# Initialize embedding model
-embedding_model = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2",
-    model_kwargs={'token': HUGGINGFACE_ACCESS_TOKEN}
-)
-
-# Create FAISS vector store
-vectordb = FAISS.from_documents(split_documents, embedding_model)
-
-# Create retriever
-retriever = vectordb.as_retriever(search_kwargs={"k": 5})
-
-# Create retriever tool
-retriever_tool = create_retriever_tool(
-    retriever,
-    name="Hotelaapp_search",
-    description="Search for information about Hotelaapp.com"
-)
+        vectordb = FAISS.from_documents(split_documents, embedding_model)
+        retriever = vectordb.as_retriever(search_kwargs={"k": 5})
+        retriever_tool = create_retriever_tool(retriever, name="Hotelaapp_search", description="Search for information")
+        print("Retriever initialized successfully.")
 
 # Function to send queries to Groq API
 def query_groq(question):
-    """ Send query to Groq API """
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": "mixtral-8x7b-32768",
-        "messages": [
-            {"role": "system", "content": "You are a helpful assistant. Keep responses short and precise."},
-            {"role": "user", "content": question}
-        ],
-        "temperature": 0.5,  # Lower temp = more focused responses
-        "max_tokens": 200,   
-    }
-    response = requests.post(GROQ_API_URL, json=payload, headers=headers)
-    
-    if response.status_code == 200:
+    try:
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": "mixtral-8x7b-32768",
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant. Keep responses short and precise."},
+                {"role": "user", "content": question}
+            ],
+            "temperature": 0.5,
+            "max_tokens": 200,
+        }
+        response = requests.post(GROQ_API_URL, json=payload, headers=headers)
+        response.raise_for_status()
         raw_response = response.json()["choices"][0]["message"]["content"]
-        
-        # Post-processing: Remove unnecessary formatting
-        clean_response = raw_response.replace("\n\n", " ").replace("\n", " ").strip()
-        
-        return clean_response
-    else:
-        return f"Error: {response.json()}"
+        return raw_response.replace("\n\n", " ").replace("\n", " ").strip()
+    except requests.RequestException as e:
+        return f"Error: {str(e)}"
 
 @app.route("/")
 def home():
     return "Hello, Render!"
 
-# Chat endpoint
 @app.route("/chat", methods=["POST"])
 def chat():
-    global retriever_tool  # Lazy-load retriever tool only when needed
-
+    initialize_retriever()
+    
     if not request.is_json:
         return jsonify({"error": "Request must be JSON"}), 415
-
+    
     data = request.get_json()
     user_query = data.get("query", "").strip().lower()
-
+    
     if not user_query:
         return jsonify({"error": "Missing 'query' field"}), 400
 
-    # Handle greetings more flexibly (removes punctuation and matches common greetings)
     greetings_pattern = r"^(hello|hi|hey|how are you|good morning|good evening)[\W]*$"
-    
     if re.match(greetings_pattern, user_query):
         return jsonify({"response": "Hello! How can I assist you today?"})
-
-    # Lazy-load retriever tool (reduces memory usage)
-    if not retriever_tool:
-        retriever_tool = create_retriever_tool(
-            retriever,
-            name="Hotelaapp_search",
-            description="Search for information about Hotelaapp.com"
-        )
-
-    # Retrieve relevant context with reduced search size (k=5)
-    relevant_context = retriever_tool.run(user_query)
-
+    
+    relevant_context = retriever_tool.run(user_query) if retriever_tool else ""
     if not relevant_context or len(relevant_context) < 10:
         return jsonify({"response": "I'm here to help! What would you like to know?"})
-
-    # Query Groq API with context
+    
     full_prompt = f"Context: {relevant_context}\n\nUser: {user_query}"
     response = query_groq(full_prompt)
-
-    # Remove excessive newlines and multiple spaces
     cleaned_response = re.sub(r"\s+", " ", response).strip()
-
     return jsonify({"response": cleaned_response})
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000)) 
+    port = int(os.environ.get("PORT", 5000))
+    print(f"Starting Flask app on port {port}")
     app.run(host="0.0.0.0", port=port, debug=True)
