@@ -57,24 +57,25 @@ def query_groq(question):
             "Content-Type": "application/json",
         }
         payload = {
-            "model": "mixtral-8x7b-32768",
+            "model": "llama-3.1-8b-instant",
             "messages": [
-                {"role": "system", "content": "You are a helpful assistant. Keep responses short and precise."},
+                {"role": "system", "content": "You are a helpful AI assistant. Keep responses short, precise and answer user queries in a casual and helpful tone"},
                 {"role": "user", "content": question}
             ],
             "temperature": 0.5,
             "max_tokens": 200,
         }
-        response = requests.post(GROQ_API_URL, json=payload, headers=headers)
+        response = requests.post(GROQ_API_URL, json=payload, headers=headers,timeout=30)
         response.raise_for_status()
         raw_response = response.json()["choices"][0]["message"]["content"]
         return raw_response.replace("\n\n", " ").replace("\n", " ").strip()
     except requests.RequestException as e:
+        print("Error Details:", e.response.text if e.response else str(e))
         return f"Error: {str(e)}"
 
 @app.route("/")
 def home():
-    return "Hello, Render!"
+    return jsonify({"status": "running"})
 
 @app.route("/chat", methods=["POST"])
 def chat():
