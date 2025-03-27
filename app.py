@@ -110,7 +110,7 @@ def query_groq(question):
 
 @app.route("/")
 def home():
-    return jsonify({"status": "running"})
+    return "Hello, Flask API is running on VPS!"
 
 @app.route("/chat", methods=["POST"])
 def chat():
@@ -139,6 +139,6 @@ def chat():
     return jsonify({"response": cleaned_response})
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 5001))
     print(f"Starting Flask app on port {port}")
     app.run(host="0.0.0.0", port=port, debug=True)
