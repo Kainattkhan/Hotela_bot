@@ -6,11 +6,11 @@ python-dotenv
 unstructured
 playwright
 pymongo
-Flask
 gunicorn
 langchain-community
 python-docx
-langchain
 langchain-huggingface
+fastapi
+uvicorn
 
 
