@@ -13,6 +13,8 @@ from langchain.tools.retriever import create_retriever_tool
 from langchain_huggingface import HuggingFaceEmbeddings
 from fastapi.middleware.cors import CORSMiddleware
 
+# Initialize FastAPI
+app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Change this to the frontend's actual URL if needed
@@ -29,9 +31,6 @@ GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 if not GROQ_API_KEY or not HUGGINGFACE_ACCESS_TOKEN:
     raise ValueError("Missing API keys! Ensure GROQ_API_KEY and HUGGINGFACE_ACCESS_TOKEN are set.")
-
-# Initialize FastAPI
-app = FastAPI()
 
 # Lazy loading of documents and vector database
 documents = None
