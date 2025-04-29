@@ -1,6 +1,5 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 from dotenv import load_dotenv
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
@@ -27,12 +26,19 @@ from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from typing import List, Union
 from pydantic import BaseModel
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
 
 # Logging Setup
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    initialize_retriever() 
+    yield
 # Initialize FastAPI
-app = FastAPI()
+app = FastAPI(lifespan=lifespan)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -228,8 +234,6 @@ def query_groq(question: str) -> str:
         logging.error(f"Error querying Groq API: {e}")
         return "An error occurred while processing your request."
 
-initialize_retriever()
-
 class Plan(BaseModel):
     name: str
     price: str
@@ -309,4 +313,3 @@ async def chat_endpoint(chat_request: ChatRequest):
     except Exception as e:
         logging.error(f"Chat error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
-
