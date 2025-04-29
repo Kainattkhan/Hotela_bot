@@ -12,5 +12,12 @@ python-docx
 langchain-huggingface
 fastapi
 uvicorn
+selenium
+webdriver-manager
+pinecone-client 
+pydantic
+PyPDF2   
+python-multipart
+
 
 

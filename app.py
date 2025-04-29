@@ -1,23 +1,41 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import uvicorn
-import os
-import re
-import requests
 from dotenv import load_dotenv
-from bs4 import BeautifulSoup
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyPDFLoader, UnstructuredWordDocumentLoader
 from langchain.tools.retriever import create_retriever_tool
+from langchain.schema import Document
 from langchain_huggingface import HuggingFaceEmbeddings
-from fastapi.middleware.cors import CORSMiddleware
+from langchain.prompts import PromptTemplate
+import uvicorn
+import json
+import os
+import re
+import time
+import requests
+import logging
+
+from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
+from typing import List, Union
+from pydantic import BaseModel
+
+# Logging Setup
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Initialize FastAPI
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Change this to the frontend's actual URL if needed
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -32,46 +50,142 @@ GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 if not GROQ_API_KEY or not HUGGINGFACE_ACCESS_TOKEN:
     raise ValueError("Missing API keys! Ensure GROQ_API_KEY and HUGGINGFACE_ACCESS_TOKEN are set.")
 
-# Lazy loading of documents and vector database
+# Lazy loading variables
 documents = None
 split_documents = None
 vectordb = None
 retriever = None
 retriever_tool = None
 
+# Request Body Model
 class ChatRequest(BaseModel):
     query: str
 
-def fetch_website_content(url: str) -> str:
-    """Fetch and clean text content from the given website."""
-    try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, "html.parser")
-        text_content = soup.get_text(separator=" ").strip()
-        return re.sub(r"\s+", " ", text_content)
-    except requests.RequestException as e:
-        return ""
+# Helper functions
+def setup_selenium_driver():
+    chrome_options = Options()
+    chrome_options.add_argument("--headless=new")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36")
+    service = Service(ChromeDriverManager().install())
+    return webdriver.Chrome(service=service, options=chrome_options)
+
+def fetch_website_content(urls):
+    if isinstance(urls, str):
+        urls = [urls]
+
+    driver = setup_selenium_driver()
+    website_documents = []  # Store each page as a document
+
+    for url in urls:
+        try:
+            driver.get(url)
+            time.sleep(10)
+            page_text = ""
+
+            # Special handling for blogs page
+            if "blogs" in url.lower():
+                blog_links = driver.find_elements(By.TAG_NAME, "a")
+                blog_urls = []
+
+                for link in blog_links:
+                    href = link.get_attribute("href")
+                    if href and "/blogs/" in href and href not in blog_urls:
+                        blog_urls.append(href)
+
+                logging.info(f"Found {len(blog_urls)} blog articles.")
+
+                # Visit each blog article and extract content
+                for blog_url in blog_urls:
+                    try:
+                        driver.get(blog_url)
+                        time.sleep(3)
+                        blog_body = driver.find_element(By.TAG_NAME, "body")
+                        blog_text = blog_body.text.strip()
+
+                        if blog_text:
+                            website_documents.append(Document(
+                                page_content=blog_text,
+                                metadata={
+                                    "source": "Hotela Blog",
+                                    "url": blog_url,
+                                    "type": "blog"
+                                }
+                            ))
+                            logging.info(f"Fetched blog article: {blog_url}")
+                        else:
+                            logging.warning(f"No content in blog: {blog_url}")
+                    except Exception as e:
+                        logging.error(f"Error fetching blog article {blog_url}: {e}")
+                        continue
+
+            else:
+                # Normal page (home, price, features, aboutus, etc.)
+                body_element = driver.find_element(By.TAG_NAME, "body")
+                page_text = body_element.text.strip()
+
+                if page_text:
+                    website_documents.append(Document(
+                        page_content=page_text,
+                        metadata={
+                            "source": "Hotela Website",
+                            "url": url,
+                            "type": "website"
+                        }
+                    ))
+                    logging.info(f"Fetched content from {url}")
+                else:
+                    logging.warning(f"No content found on {url}")
+
+        except Exception as e:
+            logging.error(f"Error fetching {url}: {e}")
+            continue
+
+    driver.quit()
+    return website_documents
 
 def initialize_retriever():
     """Lazy load document retriever."""
     global documents, split_documents, vectordb, retriever, retriever_tool
     if documents is None:
+        logging.info("Initializing retriever...")
         pdf_loader = PyPDFLoader("./hotela.pdf")
         word_loader = UnstructuredWordDocumentLoader("./business.docx")
         documents = pdf_loader.load() + word_loader.load()
+        logging.info(f"Loaded {len(documents)} documents from PDF and Word files")
 
-        hotela_content = fetch_website_content("https://hotelaapp.com/")
-        if hotela_content:
-            from langchain.schema import Document  
-            hotela_doc = Document(page_content=hotela_content, metadata={"source": "Hotela Website"})
-            documents.append(hotela_doc)
+        # Fetch website content
+        try:
+            logging.info("Fetching website content...")
+            hotela_documents = fetch_website_content([
+                "https://hotelaapp.com/",
+                "https://hotelaapp.com/price",
+                "https://hotelaapp.com/features",
+                "https://hotelaapp.com/aboutUs",
+                "https://hotelaapp.com/blogs"
+            ])
 
-        from langchain.schema import Document  
-        documents = [Document(page_content=doc.page_content, metadata=doc.metadata) for doc in documents]
+            if hotela_documents:
+                documents.extend(hotela_documents)
+                logging.info(f"Successfully loaded {len(hotela_documents)} website documents. Total documents: {len(documents)}")
+            else:
+                logging.warning("Warning: Could not fetch website content")
 
-        splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100)
+        except Exception as e:
+            logging.error(f"Error loading website content: {str(e)}")
+
+        # Split documents into chunks
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=500,
+            chunk_overlap=50,
+            length_function=len,
+            separators=["\n\n", "\n", ".", "!", "?", ",", " ", ""]
+        )
         split_documents = splitter.split_documents(documents)
+        logging.info(f"Split documents into {len(split_documents)} chunks")
 
         embedding_model = HuggingFaceEmbeddings(
             model_name="sentence-transformers/all-MiniLM-L6-v2",
@@ -79,8 +193,14 @@ def initialize_retriever():
         )
 
         vectordb = FAISS.from_documents(split_documents, embedding_model)
-        retriever = vectordb.as_retriever(search_kwargs={"k": 5})
-        retriever_tool = create_retriever_tool(retriever, name="Hotelaapp_search", description="Search for information")
+        retriever = vectordb.as_retriever(
+            search_kwargs={
+                "k": 8,
+                "filter": None
+            }
+        )
+        retriever_tool = create_retriever_tool(retriever, name="Hotelaapp_search", description="Search for Hotela information")
+        logging.info("Retriever initialization complete.")
 
 def query_groq(question: str) -> str:
     """Query the Groq API."""
@@ -89,41 +209,104 @@ def query_groq(question: str) -> str:
         payload = {
             "model": "llama-3.1-8b-instant",
             "messages": [
-                {"role": "system", "content": "You are a helpful AI assistant."},
+                {
+                    "role": "system",
+                    "content": "You are a helpful AI assistant for Hotela. Provide concise, accurate responses. Keep responses brief and to the point. Do not use markdown formatting or asterisks. If you're unsure, say so."
+                },
                 {"role": "user", "content": question}
             ],
-            "temperature": 0.5,
-            "max_tokens": 200,
+            "temperature": 0.2,
+            "max_tokens": 150,
+            "top_p": 0.9,
+            "frequency_penalty": 0.7,
+            "presence_penalty": 0.7
         }
-        response = requests.post(GROQ_API_URL, json=payload, headers=headers, timeout=30)
+        response = requests.post(GROQ_API_URL, headers=headers, json=payload)
         response.raise_for_status()
         return response.json()["choices"][0]["message"]["content"].strip()
-    except requests.RequestException as e:
-        return f"Error: {str(e)}"
+    except Exception as e:
+        logging.error(f"Error querying Groq API: {e}")
+        return "An error occurred while processing your request."
 
-@app.get("/")
-def home():
-    return {"message": "Hello, FastAPI is running on VPS!"}
+initialize_retriever()
+
+class Plan(BaseModel):
+    name: str
+    price: str
+    description: str
+
+class Feature(BaseModel):
+    title: str
+    description: str
+
+class Step(BaseModel):
+    step_number: int
+    instruction: str
+
+class ChatbotStructuredResponse(BaseModel):
+    type: str
+    content: Union[
+        str,
+        List[str],
+        List[Plan],
+        List[Feature],
+        List[Step]
+    ]
 
 @app.post("/chat")
-def chat(request: ChatRequest):
-    """Chat endpoint."""
-    initialize_retriever()
+async def chat_endpoint(chat_request: ChatRequest):
+    try:
+        # Retrieve context
+        related_docs = retriever.invoke(chat_request.query)
+        
+        if not related_docs:
+            return {"response": "I could not find relevant information on the website."}
 
-    user_query = request.query.strip().lower()
-    if not user_query:
-        raise HTTPException(status_code=400, detail="Missing 'query' field")
+        context_text = "\n\n".join(doc.page_content for doc in related_docs)
+        
+        # Format prompt to Groq
+        final_prompt = f"""
+        You are a helpful assistant for Hotela.
+        You have access to documents and website content.
+        When answering the user's question:
+        provide your answer in JSON with two fields:
+        type: the type of response (plans, features, steps, comparison, etc).
+        content: structured properly depending on the type.
+        Only return valid JSON. You can include a short friendly introductory sentence before listing points inside 'content'.
+        - If the context includes multiple points or features, you must always present them as a bullet-point list.
+        - Do not combine points into long sentences.
+        - Do not summarize into paragraphs.
+        - Keep the original phrasing and structure as much as possible.
+        - Be factual, direct, and concise.
+        - Do not add any extra marketing language or storytelling.
+        - Only use information from the context provided.
+        - Speak naturally like a customer support agent.
 
-    greetings_pattern = r"^(hello|hi|hey|how are you|good morning|good evening)[\W]*$"
-    if re.match(greetings_pattern, user_query):
-        return {"response": "Hello! How can I assist you today?"}
+        Here is the context you should use:
+        {context_text}
 
-    relevant_context = retriever_tool.run(user_query) if retriever_tool else ""
-    if not relevant_context or len(relevant_context) < 10:
-        return {"response": "I'm here to help! What would you like to know?"}
+        Question:
+        {chat_request.query}
 
-    full_prompt = f"Context: {relevant_context}\n\nUser: {user_query}"
-    response = query_groq(full_prompt)
-    return {"response": response}
+        Answer:"""
 
+        # Send to Groq
+        response = query_groq(final_prompt)
+
+        # Parse response
+        try:
+            parsed_response = json.loads(response)
+        except json.JSONDecodeError:
+            # If chatbot returns normal text, wrap it manually
+            parsed_response = {
+                "type": "text",
+                "content": response
+            }
+
+        validated_response = ChatbotStructuredResponse(**parsed_response)
+        return validated_response.dict()
+
+    except Exception as e:
+        logging.error(f"Chat error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
