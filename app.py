@@ -313,7 +313,3 @@ async def chat_endpoint(chat_request: ChatRequest):
     except Exception as e:
         logging.error(f"Chat error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
-
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=5001)
