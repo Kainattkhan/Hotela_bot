@@ -30,7 +30,6 @@ from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
-logging.basicConfig(level=logging.DEBUG)
 # Logging Setup
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -84,7 +83,7 @@ def setup_selenium_driver():
     chrome_options.add_argument("--no-zygote")
     chrome_options.add_argument("--window-size=1920,1080")
     chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36")
-    # service = Service("/usr/lib/chromium-browser/chromedriver")
+    chrome_options.binary_location = "/usr/bin/chromium-browser"
     service = ChromeService(executable_path="/usr/lib/chromium-browser/chromedriver")
     driver = webdriver.Chrome(service=service, options=chrome_options)
     driver.set_page_load_timeout(30) 
