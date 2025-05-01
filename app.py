@@ -81,14 +81,11 @@ def setup_selenium_driver():
     chrome_options.add_argument("--disable-accelerated-2d-canvas")
     chrome_options.add_argument("--no-zygote")
     chrome_options.add_argument("--window-size=1920,1080")
-    # chrome_options.add_argument("--remote-debugging-port=9222")
     chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36")
     service = Service("/usr/lib/chromium-browser/chromedriver")
     driver = webdriver.Chrome(service=service, options=chrome_options)
     driver.set_page_load_timeout(30) 
     return driver
-    # webdriver.set_page_timeout(30)
-    # return webdriver.Chrome(service=service, options=chrome_options)
 
 def fetch_website_content(urls):
     if isinstance(urls, str):
@@ -119,7 +116,7 @@ def fetch_website_content(urls):
                 for blog_url in blog_urls:
                     try:
                         driver.get(blog_url)
-                        time.sleep(3)
+                        time.sleep(5)
                         blog_body = driver.find_element(By.TAG_NAME, "body")
                         blog_text = blog_body.text.strip()
 
@@ -212,7 +209,7 @@ def initialize_retriever():
         vectordb = FAISS.from_documents(split_documents, embedding_model)
         retriever = vectordb.as_retriever(
             search_kwargs={
-                "k": 8,
+                "k": 10,
                 "filter": None
             }
         )
@@ -278,7 +275,6 @@ async def chat_endpoint(chat_request: ChatRequest):
             return {"response": "I could not find relevant information on the website."}
 
         context_text = "\n\n".join(doc.page_content for doc in related_docs)
-        
         # Format prompt to Groq
         final_prompt = f"""
         You are a helpful assistant for Hotela.
