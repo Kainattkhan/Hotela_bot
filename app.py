@@ -84,7 +84,7 @@ def setup_selenium_driver():
     chrome_options.add_argument("--no-zygote")
     chrome_options.add_argument("--window-size=1920,1080")
     chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36")
-    service = ChromeService(ChromeDriverManager().install())
+    service = ChromeService(ChromeDriverManager(version="135.0.7049.114").install())
     driver = webdriver.Chrome(service=service, options=chrome_options)
     driver.set_page_load_timeout(30) 
     return driver
