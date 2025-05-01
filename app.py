@@ -28,6 +28,7 @@ from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
+logging.basicConfig(level=logging.DEBUG)
 # Logging Setup
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
