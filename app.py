@@ -86,7 +86,7 @@ def setup_selenium_driver():
     service = Service("/usr/lib/chromium-browser/chromedriver")
     driver = webdriver.Chrome(service=service, options=chrome_options)
     driver.set_page_load_timeout(30) 
-    # return driver
+    return driver
     # webdriver.set_page_timeout(30)
     # return webdriver.Chrome(service=service, options=chrome_options)
 
