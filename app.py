@@ -32,12 +32,8 @@ logging.basicConfig(level=logging.DEBUG)
 # Logging Setup
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    initialize_retriever() 
-    yield
 # Initialize FastAPI
-app = FastAPI(lifespan=lifespan)
+app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
@@ -268,6 +264,7 @@ class ChatbotStructuredResponse(BaseModel):
 @app.post("/chat")
 async def chat_endpoint(chat_request: ChatRequest):
     try:
+        retriever = initialize_retriever()
         # Retrieve context
         related_docs = retriever.invoke(chat_request.query)
         
