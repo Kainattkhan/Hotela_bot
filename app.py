@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from dotenv import load_dotenv
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
@@ -15,26 +16,46 @@ import re
 import time
 import requests
 import logging
-
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
+
 from typing import List, Union
 from pydantic import BaseModel
-from contextlib import asynccontextmanager
-from fastapi import FastAPI
 
-logging.basicConfig(level=logging.DEBUG)
+class Plan(BaseModel):
+    name: str
+    price: str
+    description: str
+
+class Feature(BaseModel):
+    title: str
+    description: str
+
+class Step(BaseModel):
+    step_number: int
+    instruction: str
+
+class ChatbotStructuredResponse(BaseModel):
+    type: str
+    content: Union[
+        str,
+        List[str],
+        List[Plan],
+        List[Feature],
+        List[Step]
+    ]
+
 # Logging Setup
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Initialize FastAPI
 app = FastAPI()
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -68,20 +89,12 @@ def setup_selenium_driver():
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--disable-software-rasterizer")
-    chrome_options.add_argument("--disable-extensions")
-    chrome_options.add_argument("--single-process")
-    chrome_options.add_argument("--disable-accelerated-2d-canvas")
-    chrome_options.add_argument("--no-zygote")
     chrome_options.add_argument("--window-size=1920,1080")
     chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36")
-    service = Service("/usr/lib/chromium-browser/chromedriver")
-    driver = webdriver.Chrome(service=service, options=chrome_options)
-    driver.set_page_load_timeout(30) 
-    return driver
+    service = Service(ChromeDriverManager().install())
+    return webdriver.Chrome(service=service, options=chrome_options)
 
 def fetch_website_content(urls):
     if isinstance(urls, str):
@@ -98,6 +111,7 @@ def fetch_website_content(urls):
 
             # Special handling for blogs page
             if "blogs" in url.lower():
+                # Find all links inside the blogs page
                 blog_links = driver.find_elements(By.TAG_NAME, "a")
                 blog_urls = []
 
@@ -112,7 +126,7 @@ def fetch_website_content(urls):
                 for blog_url in blog_urls:
                     try:
                         driver.get(blog_url)
-                        time.sleep(5)
+                        time.sleep(3)
                         blog_body = driver.find_element(By.TAG_NAME, "body")
                         blog_text = blog_body.text.strip()
 
@@ -205,7 +219,7 @@ def initialize_retriever():
         vectordb = FAISS.from_documents(split_documents, embedding_model)
         retriever = vectordb.as_retriever(
             search_kwargs={
-                "k": 10,
+                "k": 8,
                 "filter": None
             }
         )
@@ -238,41 +252,19 @@ def query_groq(question: str) -> str:
         logging.error(f"Error querying Groq API: {e}")
         return "An error occurred while processing your request."
 
-class Plan(BaseModel):
-    name: str
-    price: str
-    description: str
-
-class Feature(BaseModel):
-    title: str
-    description: str
-
-class Step(BaseModel):
-    step_number: int
-    instruction: str
-
-class ChatbotStructuredResponse(BaseModel):
-    type: str
-    content: Union[
-        str,
-        List[str],
-        List[Plan],
-        List[Feature],
-        List[Step]
-    ]
-
 @app.post("/chat")
 async def chat_endpoint(chat_request: ChatRequest):
     try:
-        retriever = initialize_retriever()
-        # Retrieve context
+        initialize_retriever()
+        # Step 1: Retrieve context
         related_docs = retriever.invoke(chat_request.query)
         
         if not related_docs:
             return {"response": "I could not find relevant information on the website."}
 
         context_text = "\n\n".join(doc.page_content for doc in related_docs)
-        # Format prompt to Groq
+        
+        # Step 2: Format prompt to Groq
         final_prompt = f"""
         You are a helpful assistant for Hotela.
         You have access to documents and website content.
@@ -298,10 +290,11 @@ async def chat_endpoint(chat_request: ChatRequest):
 
         Answer:"""
 
-        # Send to Groq
+        # Step 3: Send to Groq
         response = query_groq(final_prompt)
 
-        # Parse response
+        # Step 4: Parse response safely
+        import json
         try:
             parsed_response = json.loads(response)
         except json.JSONDecodeError:
@@ -311,8 +304,11 @@ async def chat_endpoint(chat_request: ChatRequest):
                 "content": response
             }
 
+        # Step 5: Validate the parsed_response
         validated_response = ChatbotStructuredResponse(**parsed_response)
-        return validated_response.dict()
+
+        # Step 6: Return clean validated response
+        return validated_response.model_dump()
 
     except Exception as e:
         logging.error(f"Chat error: {e}")
